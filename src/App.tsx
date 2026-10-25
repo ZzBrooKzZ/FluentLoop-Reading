@@ -14,6 +14,8 @@ import {
   Compass,
   LogIn,
   LogOut,
+  Sun,
+  Moon,
 } from 'lucide-react';
 import {
   signInWithPopup,
@@ -24,6 +26,8 @@ import {
 import {
   collection,
   doc,
+  getDoc,
+  serverTimestamp,
   setDoc,
   deleteDoc,
   onSnapshot,
@@ -54,6 +58,7 @@ import {
 } from './data/ieltsAcademicUpgrade';
 import { InteractivePassage } from './components/InteractivePassage';
 import { QuestionAssessment } from './components/QuestionAssessment';
+import { AssignedPassagePreview } from './components/AssignedPassagePreview';
 import { AdminStudio } from './components/AdminStudio';
 import { DocumentationView } from './components/DocumentationModal';
 import {
@@ -62,8 +67,9 @@ import {
   QUESTION_TYPE_LABELS,
 } from './services/gradingService';
 import { computeAdaptiveRecommendation } from './services/adaptiveEngine';
+import { applyAttemptProgression, createAdaptiveProfile, getLessonDifficulty, selectNextLesson } from './services/adaptiveLearning';
 
-type NavTab = 'library' | 'reader' | 'vocabulary' | 'analytics' | 'admin' | 'docs';
+type NavTab = 'library' | 'preview' | 'reader' | 'history' | 'vocabulary' | 'analytics' | 'admin' | 'docs';
 
 const STORAGE_KEYS = {
   CURRENT_LEVEL: 'fluentloop_current_level_v1',
@@ -89,11 +95,23 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<NavTab>('library');
   const [currentUser, setCurrentUser] = useState<FirebaseUser | null>(null);
   const [geminiConfigured, setGeminiConfigured] = useState<boolean>(false);
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => localStorage.getItem('fluentloop_theme_v1') === 'dark' ? 'dark' : 'light');
 
   const [currentLevel, setCurrentLevel] = useState<CEFRLevel>(() => {
     const saved = localStorage.getItem(STORAGE_KEYS.CURRENT_LEVEL);
     return (saved as CEFRLevel) || 'B1';
   });
+
+  const [startingLevel, setStartingLevel] = useState<CEFRLevel | null>(() => {
+    const savedStartingLevel = localStorage.getItem('fluentloop_starting_level_v1') as CEFRLevel | null;
+    if (savedStartingLevel) return savedStartingLevel;
+    try {
+      const savedAttempts = JSON.parse(localStorage.getItem(STORAGE_KEYS.ATTEMPTS) || '[]') as LessonAttempt[];
+      if (savedAttempts.length > 0) return (localStorage.getItem(STORAGE_KEYS.CURRENT_LEVEL) as CEFRLevel | null) || savedAttempts[0].level;
+    } catch { /* Ignore damaged local cache and treat as a new visitor. */ }
+    return null;
+  });
+  const [showLevelChooser, setShowLevelChooser] = useState(false);
 
   const [selectedLevelFilter, setSelectedLevelFilter] = useState<CEFRLevel | 'ALL'>('ALL');
   const [selectedTopicFilter, setSelectedTopicFilter] = useState<string>('ALL');
@@ -143,6 +161,12 @@ export default function App() {
   const [vocabSearch, setVocabSearch] = useState('');
 
   useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.style.colorScheme = theme;
+    localStorage.setItem('fluentloop_theme_v1', theme);
+  }, [theme]);
+
+  useEffect(() => {
     testConnection();
     fetch('/api/health')
       .then((r) => r.json())
@@ -160,22 +184,29 @@ export default function App() {
       if (user) {
         try {
           const userRef = doc(db, 'users', user.uid);
-          const nowIso = new Date().toISOString();
-          await setDoc(
-            userRef,
-            {
-              uid: user.uid,
-              displayName: user.displayName || 'Academic Reader',
-              preferredLevel: currentLevel,
-              showArabicTranslation,
-              fontSize,
-              completedCount: attempts.length,
-              averageAccuracy: 0,
-              createdAt: nowIso,
-              updatedAt: nowIso,
-            },
-            { merge: true }
-          );
+          const snapshot = await getDoc(userRef);
+          const existingProfile = snapshot.exists() ? snapshot.data() : null;
+          const savedLevel = (localStorage.getItem('fluentloop_starting_level_v1') as CEFRLevel | null) || (existingProfile && (existingProfile.startingLevel || existingProfile.completedCount > 0) ? existingProfile.preferredLevel as CEFRLevel : null);
+          if (savedLevel && !localStorage.getItem('fluentloop_starting_level_v1')) {
+            const restoredStartingLevel = (existingProfile?.startingLevel as CEFRLevel | undefined) || savedLevel;
+            localStorage.setItem('fluentloop_starting_level_v1', restoredStartingLevel);
+            localStorage.setItem(STORAGE_KEYS.CURRENT_LEVEL, savedLevel);
+            setStartingLevel(restoredStartingLevel);
+            setCurrentLevel(savedLevel);
+          }
+          const savedStartingLevel = (existingProfile?.startingLevel as CEFRLevel | undefined) || (localStorage.getItem('fluentloop_starting_level_v1') as CEFRLevel | null);
+          await setDoc(userRef, {
+            uid: user.uid,
+            displayName: user.displayName || existingProfile?.displayName || 'Academic Reader',
+            preferredLevel: (existingProfile?.preferredLevel as CEFRLevel | undefined) || currentLevel,
+            ...(savedStartingLevel ? { startingLevel: savedStartingLevel } : {}),
+            showArabicTranslation: typeof existingProfile?.showArabicTranslation === 'boolean' ? existingProfile.showArabicTranslation : showArabicTranslation,
+            fontSize: (existingProfile?.fontSize as 'sm' | 'md' | 'lg' | 'xl' | undefined) || fontSize,
+            completedCount: typeof existingProfile?.completedCount === 'number' ? existingProfile.completedCount : attempts.length,
+            averageAccuracy: typeof existingProfile?.averageAccuracy === 'number' ? existingProfile.averageAccuracy : 0,
+            createdAt: existingProfile?.createdAt || serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          }, { merge: true });
         } catch (err) {
           console.warn('Profile sync note:', err);
         }
@@ -221,6 +252,12 @@ export default function App() {
         const remoteAttempts: LessonAttempt[] = [];
         snap.forEach((d) => remoteAttempts.push(d.data() as LessonAttempt));
         if (remoteAttempts.length > 0) {
+          if (!localStorage.getItem('fluentloop_starting_level_v1')) {
+            const restoredLevel = (localStorage.getItem(STORAGE_KEYS.CURRENT_LEVEL) as CEFRLevel | null) || remoteAttempts[0].level;
+            localStorage.setItem('fluentloop_starting_level_v1', restoredLevel);
+            setStartingLevel(restoredLevel);
+            setCurrentLevel(restoredLevel);
+          }
           setAttempts((prev) => {
             const byId = new Map<string, LessonAttempt>();
             prev.forEach((a) => byId.set(a.id, a));
@@ -361,6 +398,13 @@ export default function App() {
     return allLessons.find((l) => l.id === activeLessonId) || publishedLessons[0] || null;
   }, [activeLessonId, allLessons, publishedLessons]);
 
+  const dashboardLesson = useMemo(() => {
+    const base = createAdaptiveProfile(startingLevel || currentLevel);
+    const profile = { ...base, currentLevel, currentDifficultyScore: Number(localStorage.getItem('fluentloop_difficulty_target_v1')) || base.currentDifficultyScore, consecutivePasses: Number(localStorage.getItem('fluentloop_pass_streak_v1')) || 0, consecutiveFailures: Number(localStorage.getItem('fluentloop_fail_streak_v1')) || 0 };
+    return selectNextLesson(profile, publishedLessons, attempts) || activeLesson;
+  }, [startingLevel, currentLevel, publishedLessons, attempts, activeLesson]);
+  const dashboardAttempt = dashboardLesson ? attempts.find((attempt) => attempt.lessonId === dashboardLesson.id && attempt.status === 'in_progress' && (attempt.attemptType || 'first') === 'first') : undefined;
+
   const savedVocabWordsForActiveLesson = useMemo(() => {
     if (!activeLesson) return new Set<string>();
     const savedSet = new Set<string>();
@@ -396,6 +440,14 @@ export default function App() {
     } catch (err) {
       console.warn('Sign-out error:', err);
     }
+  };
+
+  const handlePreviewLesson = (lesson: ReadingLesson) => {
+    setActiveLessonId(lesson.id);
+    localStorage.setItem(STORAGE_KEYS.LAST_LESSON_ID, lesson.id);
+    setHighlightedEvidenceQuote(null);
+    setActiveTab('preview');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleOpenLesson = (lesson: ReadingLesson) => {
@@ -483,6 +535,7 @@ export default function App() {
       level: activeLesson.level,
       topic: activeLesson.topic,
       status: 'completed',
+      attemptType: 'first',
       score: graded.score,
       totalQuestions: graded.totalQuestions,
       accuracy: graded.accuracy,
@@ -496,6 +549,15 @@ export default function App() {
     setAttempts(updatedAttempts);
     localStorage.setItem(STORAGE_KEYS.ATTEMPTS, JSON.stringify(updatedAttempts));
 
+    const initialProfile = createAdaptiveProfile(startingLevel || currentLevel);
+    const progression = applyAttemptProgression({ profile: { ...initialProfile, currentLevel, currentDifficultyScore: Number(localStorage.getItem('fluentloop_difficulty_target_v1')) || initialProfile.currentDifficultyScore, consecutivePasses: Number(localStorage.getItem('fluentloop_pass_streak_v1')) || 0, consecutiveFailures: Number(localStorage.getItem('fluentloop_fail_streak_v1')) || 0 }, attemptType: 'first', completed: true, pendingReviewCount: graded.results.filter((r) => r.verdict === 'needs_review').length, accuracy: graded.accuracy, lessonDifficulty: getLessonDifficulty(activeLesson) });
+    if (progression.changed) {
+      setCurrentLevel(progression.profile.currentLevel);
+      localStorage.setItem('fluentloop_difficulty_target_v1', String(progression.profile.currentDifficultyScore));
+      localStorage.setItem('fluentloop_pass_streak_v1', String(progression.profile.consecutivePasses));
+      localStorage.setItem('fluentloop_fail_streak_v1', String(progression.profile.consecutiveFailures));
+    }
+
     if (currentUser) {
       setDoc(doc(db, 'attempts', newAttempt.id), newAttempt).catch((err) =>
         handleFirestoreError(err, OperationType.CREATE, `attempts/${newAttempt.id}`)
@@ -503,6 +565,62 @@ export default function App() {
     }
 
     return graded;
+  };
+
+  const handleStartNextPassage = (selectedLesson?: ReadingLesson, levelOverride?: CEFRLevel) => {
+    const effectiveLevel = levelOverride || currentLevel;
+    const initialProfile = createAdaptiveProfile(startingLevel || effectiveLevel);
+    const profile = { ...initialProfile, currentLevel: effectiveLevel, currentDifficultyScore: Number(localStorage.getItem('fluentloop_difficulty_target_v1')) || initialProfile.currentDifficultyScore, consecutivePasses: Number(localStorage.getItem('fluentloop_pass_streak_v1')) || 0, consecutiveFailures: Number(localStorage.getItem('fluentloop_fail_streak_v1')) || 0 };
+    const next = selectedLesson || selectNextLesson(profile, publishedLessons, attempts);
+    if (!next) { window.alert(`You have completed the available ${currentLevel} passages. Your level will advance when progression criteria are met.`); return; }
+    const now = new Date().toISOString();
+    const existing = attempts.find((a) => a.status === 'in_progress' && a.lessonId === next.id && (a.attemptType || 'first') === 'first');
+    if (existing) {
+      handleOpenLesson(next);
+      return;
+    }
+    {
+      const assignment: LessonAttempt = { id: `att-${Date.now()}`, userId: currentUser?.uid || 'guest', lessonId: next.id, lessonTitle: next.title, level: next.level, topic: next.topic, status: 'in_progress', attemptType: 'first', score: 0, totalQuestions: next.questions.length, accuracy: 0, answers: {}, questionTypeStats: {}, createdAt: now, updatedAt: now };
+      const updated = [assignment, ...attempts]; setAttempts(updated); localStorage.setItem(STORAGE_KEYS.ATTEMPTS, JSON.stringify(updated));
+      if (currentUser) setDoc(doc(db, 'attempts', assignment.id), assignment).catch((err) => console.warn('Could not sync assignment:', err));
+    }
+    handlePreviewLesson(next);
+  };
+
+  const handleChooseStartingLevel = (level: CEFRLevel) => {
+    const initialProfile = createAdaptiveProfile(level);
+    setStartingLevel(level);
+    setCurrentLevel(level);
+    setShowLevelChooser(false);
+    localStorage.setItem('fluentloop_starting_level_v1', level);
+    localStorage.setItem(STORAGE_KEYS.CURRENT_LEVEL, level);
+    localStorage.setItem('fluentloop_difficulty_target_v1', String(initialProfile.currentDifficultyScore));
+    localStorage.setItem('fluentloop_pass_streak_v1', '0');
+    localStorage.setItem('fluentloop_fail_streak_v1', '0');
+    if (currentUser) {
+      const profileRef = doc(db, 'users', currentUser.uid);
+      getDoc(profileRef).then((snapshot) => {
+        const now = serverTimestamp();
+        const profile = snapshot.exists() ? {
+          preferredLevel: level,
+          startingLevel: level,
+          updatedAt: now,
+        } : {
+          uid: currentUser.uid,
+          displayName: currentUser.displayName || 'Academic Reader',
+          preferredLevel: level,
+          startingLevel: level,
+          showArabicTranslation,
+          fontSize,
+          completedCount: attempts.length,
+          averageAccuracy: 0,
+          createdAt: now,
+          updatedAt: now,
+        };
+        return setDoc(profileRef, profile, { merge: true });
+      }).catch((err) => console.warn('Could not sync starting level:', err));
+    }
+    handleStartNextPassage(undefined, level);
   };
 
   const handleSaveAdminLesson = async (lesson: ReadingLesson) => {
@@ -620,6 +738,19 @@ export default function App() {
     return totals;
   }, [attempts]);
 
+  const readingProgress = useMemo(() => {
+    const completed = attempts.filter((attempt) => attempt.status === 'completed' && (attempt.attemptType || 'first') === 'first').sort((a, b) => new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime());
+    const dayKey = (date: Date) => [date.getFullYear(), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0')].join('-');
+    const activeDays = new Set(completed.map((attempt) => dayKey(new Date(attempt.updatedAt))));
+    const cursor = new Date(); cursor.setHours(0, 0, 0, 0);
+    if (!activeDays.has(dayKey(cursor))) cursor.setDate(cursor.getDate() - 1);
+    let streakDays = 0;
+    while (activeDays.has(dayKey(cursor))) { streakDays += 1; cursor.setDate(cursor.getDate() - 1); }
+    const recent = completed.slice(-8);
+    const points = recent.map((attempt, index) => ({ id: attempt.id, x: recent.length === 1 ? 150 : 20 + (index * 260) / (recent.length - 1), y: 90 - Math.max(0, Math.min(100, attempt.accuracy)) * 0.8, accuracy: Math.max(0, Math.min(100, attempt.accuracy)) }));
+    return { streakDays, completedCount: completed.length, points };
+  }, [attempts]);
+
   const activePassageParagraphs = useMemo(() => {
     if (!activeLesson) return [];
     return activeLesson.passage.split(/\n\s*\n/).filter(Boolean);
@@ -650,12 +781,12 @@ export default function App() {
           </button>
 
           {/* Zone 2: Primary Navigation Links (Max 5 items, whitespace-nowrap) */}
-          <nav className="flex items-center gap-1 sm:gap-2 overflow-x-auto">
+          {startingLevel !== null && <nav className="flex items-center gap-1 sm:gap-2 overflow-x-auto">
             <button
               type="button"
               onClick={() => setActiveTab('library')}
               className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs sm:text-sm font-semibold whitespace-nowrap transition-colors cursor-pointer ${
-                activeTab === 'library' || activeTab === 'reader'
+                activeTab === 'library' || activeTab === 'preview' || activeTab === 'reader'
                   ? 'bg-[#141413] text-[#FAF7F2]'
                   : 'text-[#57534E] hover:bg-[#F3EFE6] hover:text-[#141413]'
               }`}
@@ -663,6 +794,8 @@ export default function App() {
               <BookOpen className="h-4 w-4" />
               <span>Library</span>
             </button>
+
+            <button type="button" onClick={() => setActiveTab('history')} className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold ${activeTab === 'history' ? 'bg-[#141413] text-white' : 'text-[#57534E] hover:bg-[#F3EFE6]'}`}><Clock className="h-4 w-4"/><span>Reading History</span></button>
 
             <button
               type="button"
@@ -715,10 +848,14 @@ export default function App() {
               <FileText className="h-4 w-4" />
               <span>Guide</span>
             </button>
-          </nav>
+          </nav>}
 
           {/* Zone 3: Single Primary Action / Auth */}
-          <div className="flex items-center gap-3 whitespace-nowrap">
+          <div className="flex items-center gap-2 whitespace-nowrap">
+            <button type="button" onClick={() => setTheme((current) => current === 'light' ? 'dark' : 'light')} aria-label={theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'} title={theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'} className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-[#D8CFC2] bg-white text-[#57534E] transition hover:bg-[#F3EFE6] focus:outline-none focus:ring-2 focus:ring-[#9A3412]">
+              {theme === 'light' ? <Moon className="h-4 w-4" aria-hidden="true" /> : <Sun className="h-4 w-4" aria-hidden="true" />}
+              <span className="sr-only">{theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'}</span>
+            </button>
             {currentUser ? (
               <div className="flex items-center gap-2.5">
                 <span className="hidden md:inline-block text-xs text-[#57534E]">
@@ -750,6 +887,42 @@ export default function App() {
 
       {/* MAIN CONTENT WORKSPACE */}
       <main className="mx-auto w-full max-w-[1440px] flex-1 px-4 sm:px-8 py-6 sm:py-8">
+        {startingLevel === null ? (
+          showLevelChooser ? (
+            <section className="mx-auto w-full max-w-3xl py-8 sm:py-14" aria-labelledby="level-choice-title">
+              <button type="button" onClick={() => setShowLevelChooser(false)} className="mb-6 inline-flex items-center gap-2 text-sm font-semibold text-[#57534E] hover:text-[#141413] focus:outline-none focus:ring-2 focus:ring-[#9A3412] rounded-md"><ArrowLeft className="h-4 w-4"/> Back to overview</button>
+              <div className="rounded-2xl border border-[#E5DEC9] bg-[#F3EFE6] p-6 sm:p-9">
+                <span className="text-xs font-bold uppercase tracking-[0.18em] text-[#9A3412]">Your reading journey</span>
+                <h1 id="level-choice-title" className="mt-2 font-display text-3xl font-bold text-[#141413] sm:text-4xl">Choose your starting level</h1>
+                <p className="mt-3 max-w-2xl text-sm leading-relaxed text-[#57534E]">Choose the level that feels comfortable. There is no placement test, and FluentLoop will adapt as you read.</p>
+                <div className="mt-7 grid gap-3 sm:grid-cols-2">{CEFR_LEVELS.map((level) => <button key={level} type="button" onClick={() => handleChooseStartingLevel(level)} className="rounded-xl border border-[#D8CFC2] bg-white p-5 text-left transition hover:-translate-y-0.5 hover:border-[#9A3412] hover:shadow-md focus:outline-none focus:ring-4 focus:ring-[#9A3412]/20"><span className="font-mono-code text-lg font-bold text-[#9A3412]">{level}</span><p className="mt-1 text-sm font-semibold text-[#141413]">{({A1:'Beginner',A2:'Elementary',B1:'Intermediate',B2:'Upper-intermediate',C1:'Advanced'} as Record<CEFRLevel,string>)[level]}</p><p className="mt-2 text-xs leading-relaxed text-[#57534E]">{({A1:'Short, clear texts about familiar topics.',A2:'Everyday and factual passages with common vocabulary.',B1:'Structured passages with supporting details and new ideas.',B2:'Longer academic texts with nuanced vocabulary.',C1:'Advanced passages with complex arguments and inference.'} as Record<CEFRLevel,string>)[level]}</p></button>)}</div>
+              </div>
+            </section>
+          ) : (
+            <section className="mx-auto w-full max-w-6xl py-8 sm:py-14" aria-labelledby="landing-title">
+              <div className="overflow-hidden rounded-3xl border border-[#E5DEC9] bg-[#F3EFE6] shadow-sm">
+                <div className="grid items-center gap-8 p-6 sm:p-10 lg:grid-cols-[1.05fr_0.95fr] lg:p-14">
+                  <div className="animate-[fadeIn_.45s_ease-out]">
+                    <span className="inline-flex items-center gap-2 rounded-full border border-[#D8CFC2] bg-[#FAF7F2] px-3 py-1.5 font-mono-code text-[10px] font-bold uppercase tracking-[0.16em] text-[#9A3412]">English reading, one passage at a time</span>
+                    <h1 id="landing-title" className="mt-5 max-w-2xl font-display text-4xl font-bold leading-[1.08] tracking-tight text-[#141413] sm:text-5xl lg:text-6xl">Grow your English through <span className="text-[#9A3412]">reading.</span></h1>
+                    <p className="mt-5 max-w-xl text-base leading-relaxed text-[#57534E] sm:text-lg">Read engaging passages, build vocabulary in context, and strengthen your comprehension with guided practice made for your level.</p>
+                    <button type="button" onClick={() => setShowLevelChooser(true)} className="mt-7 inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-[#9A3412] px-6 py-3 text-sm font-bold text-white shadow-md transition hover:-translate-y-0.5 hover:bg-[#7C2D12] focus:outline-none focus:ring-4 focus:ring-[#9A3412]/30">Start Your Reading Journey <span aria-hidden="true">→</span></button>
+                    <p className="mt-3 text-xs text-[#78716C]">Choose a starting level · No placement test · Guest access available</p>
+                  </div>
+                  <div className="relative overflow-hidden rounded-2xl border border-[#D8CFC2] bg-[#0D5B48] shadow-lg transition-transform duration-300 hover:scale-[1.01]">
+                    <img src={INITIAL_LESSONS[0]?.illustrationUrl} alt="Illustration from a FluentLoop reading passage" className="aspect-[4/3] w-full object-cover" />
+                    <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/75 to-transparent p-5 pt-16 text-white"><span className="text-xs font-semibold uppercase tracking-wider text-white/80">Read · Understand · Grow</span><p className="mt-1 font-display text-xl font-bold">Explore ideas through English</p></div>
+                  </div>
+                </div>
+              </div>
+              <section className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-4" aria-label="FluentLoop benefits">
+                {[['Vocabulary in context','Learn useful words through clear meanings tied to each passage.'],['Reading comprehension','Answer focused questions and see where ideas appear in the text.'],['IELTS-style practice','Get familiar with academic reading question formats.'],['Adaptive difficulty','Build confidence with passages that gradually grow more challenging.']].map(([title,description],i)=><article key={title} className="rounded-2xl border border-[#E5DEC9] bg-white p-5 shadow-sm transition duration-200 hover:-translate-y-1 hover:shadow-md" style={{animationDelay:i*70+'ms'}}><span className="font-mono-code text-xs font-bold text-[#9A3412]">0{i+1}</span><h2 className="mt-3 font-display text-lg font-bold text-[#141413]">{title}</h2><p className="mt-2 text-sm leading-relaxed text-[#57534E]">{description}</p></article>)}
+              </section>
+              <section className="mt-8 rounded-2xl border border-[#E5DEC9] bg-[#FAF7F2] p-6 sm:p-8"><h2 className="font-display text-2xl font-bold text-[#141413]">A simple path to stronger reading</h2><div className="mt-5 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">{[['01','Read a passage'],['02','Answer the questions'],['03','Learn from mistakes'],['04','Progress at your pace']].map(([n,title])=><div key={n} className="flex gap-3"><span className="font-mono-code text-xs font-bold text-[#9A3412]">{n}</span><p className="text-sm font-semibold text-[#141413]">{title}</p></div>)}</div><p className="mt-4 max-w-3xl text-sm leading-relaxed text-[#57534E]">FluentLoop uses your results to guide your next reading and gradually introduce more demanding passages, while keeping your reading history available.</p></section>
+            </section>
+          )
+        ) : (
+          <>
         {/* VIEW 1: READING LIBRARY */}
         {activeTab === 'library' && (
           <div className="space-y-8">
@@ -766,39 +939,7 @@ export default function App() {
                     Every passage highlights 8–15 essential academic words explained in clear, familiar English tailored to that exact sentence—training you to think directly in English without relying on default bilingual translation.
                   </p>
 
-                  <div className="pt-2 flex flex-wrap items-center gap-2">
-                    <span className="text-xs font-semibold uppercase tracking-wider text-[#57534E] mr-1">
-                      Your Target Level:
-                    </span>
-                    {CEFR_LEVELS.map((lvl) => (
-                      <button
-                        key={lvl}
-                        type="button"
-                        onClick={() => {
-                          setCurrentLevel(lvl);
-                          setSelectedLevelFilter(lvl);
-                        }}
-                        className={`rounded-lg px-3 py-1.5 font-mono-code text-xs font-bold transition-colors cursor-pointer ${
-                          currentLevel === lvl
-                            ? 'bg-[#9A3412] text-white shadow-xs'
-                            : 'bg-[#FAF7F2] text-[#141413] border border-[#D8CFC2] hover:border-[#9A3412]'
-                        }`}
-                      >
-                        {lvl}
-                      </button>
-                    ))}
-                    <button
-                      type="button"
-                      onClick={() => setSelectedLevelFilter('ALL')}
-                      className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors cursor-pointer ${
-                        selectedLevelFilter === 'ALL'
-                          ? 'bg-[#141413] text-white'
-                          : 'bg-[#FAF7F2] text-[#57534E] border border-[#D8CFC2]'
-                      }`}
-                    >
-                      Show All 50 Lessons
-                    </button>
-                  </div>
+                  <div className="pt-2 flex flex-wrap items-center gap-2"><span className="text-xs font-semibold uppercase tracking-wider text-[#57534E]">Current level</span><strong className="rounded-lg bg-[#9A3412] px-3 py-1.5 font-mono-code text-xs text-white">{currentLevel}</strong></div>
                 </div>
 
                 {/* Adaptive Recommendation Card */}
@@ -831,47 +972,15 @@ export default function App() {
                     </span>
                   </div>
 
-                  {adaptiveRecommendation.recommendedLevel !== currentLevel && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setCurrentLevel(adaptiveRecommendation.recommendedLevel);
-                        setSelectedLevelFilter(adaptiveRecommendation.recommendedLevel);
-                      }}
-                      className="w-full rounded-lg bg-[#15803D] px-3 py-2 text-xs font-semibold text-white hover:bg-[#14532D]"
-                    >
-                      Switch Active Level to {adaptiveRecommendation.recommendedLevel}
-                    </button>
-                  )}
+                  
                 </div>
               </div>
             </section>
 
-            {/* Resume Unfinished / Last Active Lesson Banner */}
-            {activeLesson && (
-              <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-[#D8CFC2] bg-[#FFFDF9] px-5 py-3.5">
-                <div className="flex items-center gap-3">
-                  <Clock className="h-4 w-4 text-[#9A3412] shrink-0" />
-                  <div className="text-xs sm:text-sm">
-                    <span className="font-semibold text-[#57534E]">Continue Reading: </span>
-                    <strong className="text-[#141413]">{activeLesson.title}</strong>
-                    <span className="ml-2 text-xs text-[#78716C]">
-                      {activeLesson.level} · {activeLesson.topic} ·{' '}
-                      {activeLesson.wordCount || activeLesson.passage.split(/\s+/).length} words
-                    </span>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => handleOpenLesson(activeLesson)}
-                  className="rounded-lg bg-[#141413] px-4 py-1.5 text-xs font-semibold text-white hover:bg-[#292524] cursor-pointer"
-                >
-                  Open Passage
-                </button>
-              </div>
-            )}
+            {/* Prominent next passage card */}
+            {dashboardLesson && <section className="group overflow-hidden rounded-2xl border border-[#D8CFC2] bg-white shadow-md transition-shadow hover:shadow-lg"><div className="grid md:grid-cols-[minmax(0,1.05fr)_minmax(0,1fr)]"><button type="button" onClick={() => dashboardAttempt ? handleOpenLesson(dashboardLesson) : handleStartNextPassage(dashboardLesson)} aria-label={dashboardAttempt ? 'Continue reading ' + dashboardLesson.title : 'Start reading ' + dashboardLesson.title} className="relative block min-h-56 w-full overflow-hidden bg-[#EAE3D5] text-left md:min-h-72"><img src={dashboardLesson.illustrationUrl} alt={dashboardLesson.illustrationAlt || dashboardLesson.title} className="absolute inset-0 h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.03]"/><div className="absolute inset-0 bg-gradient-to-t from-black/65 via-black/10 to-transparent"/><span className="absolute bottom-4 left-5 rounded-full bg-white/95 px-3 py-1 text-xs font-bold text-[#9A3412]">{dashboardLesson.level} · {dashboardLesson.estimatedMinutes} min read</span></button><div className="flex flex-col justify-center p-6 sm:p-8"><span className="text-xs font-bold uppercase tracking-[0.18em] text-[#9A3412]">{dashboardAttempt ? 'Pick up where you left off' : 'Your next passage'}</span><h2 className="mt-3 font-display text-2xl font-bold leading-tight text-[#141413] sm:text-3xl">{dashboardLesson.title}</h2><p className="mt-3 text-sm leading-relaxed text-[#57534E]">{dashboardLesson.introduction}</p><button type="button" onClick={() => dashboardAttempt ? handleOpenLesson(dashboardLesson) : handleStartNextPassage(dashboardLesson)} className="mt-6 inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-[#9A3412] px-6 py-3 text-sm font-bold text-white shadow-sm transition-colors hover:bg-[#7C2D12] focus:outline-none focus:ring-4 focus:ring-[#9A3412]/25">{dashboardAttempt ? 'Continue Reading' : attempts.length === 0 ? 'Start Reading' : 'Start Next Passage'} <span aria-hidden="true">→</span></button><p className="mt-2 text-xs text-[#78716C]">{dashboardLesson.topic} · {dashboardLesson.wordCount || dashboardLesson.passage.split(/\s+/).length} words</p></div></div></section>}
 
-            {/* Filter & Search Toolbar */}
+            {false && (<>{/* Filter & Search Toolbar */}
             <div className="flex flex-wrap items-center justify-between gap-4 border-b border-[#E5DEC9] pb-4">
               <div className="flex flex-wrap items-center gap-2">
                 {(['ALL', ...CEFR_LEVELS] as const).map((lvl) => (
@@ -1010,9 +1119,11 @@ export default function App() {
                   );
                 })}
               </div>
-            )}
+            )}</>)}
           </div>
         )}
+
+        {activeTab === 'preview' && activeLesson && <AssignedPassagePreview lesson={activeLesson} streakDays={readingProgress.streakDays} completedCount={readingProgress.completedCount} progressPoints={readingProgress.points} onBack={() => setActiveTab('library')} onStart={() => handleOpenLesson(activeLesson)} />}
 
         {/* VIEW 2: INTERACTIVE READING WORKSPACE */}
         {activeTab === 'reader' && activeLesson && (
@@ -1127,6 +1238,8 @@ export default function App() {
             </div>
           </div>
         )}
+
+        {activeTab === 'history' && <section className="mx-auto max-w-4xl space-y-4"><div><h1 className="font-display text-3xl font-bold">Reading History</h1><p className="mt-1 text-sm text-[#57534E]">Your completed and unfinished passages.</p></div>{attempts.length === 0 ? <p className="rounded-xl bg-white p-6 text-sm">Your reading activity will appear here.</p> : attempts.map((attempt) => { const lesson = allLessons.find((item) => item.id === attempt.lessonId); return <article key={attempt.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#E5DEC9] bg-white p-4"><div><h2 className="font-semibold">{attempt.lessonTitle}</h2><p className="text-xs text-[#57534E]">{attempt.level} · {attempt.status === 'in_progress' ? 'In progress' : 'Score ' + attempt.accuracy + '%'} · {new Date(attempt.updatedAt).toLocaleDateString()}</p></div>{lesson && <button type="button" onClick={() => handleOpenLesson(lesson)} className="rounded-lg bg-[#141413] px-3 py-2 text-xs font-semibold text-white">{attempt.status === 'in_progress' ? 'Continue' : 'Review'}</button>}</article>; })}</section>}
 
         {/* VIEW 3: PERSONAL VOCABULARY BANK */}
         {activeTab === 'vocabulary' && (
@@ -1413,7 +1526,10 @@ export default function App() {
 
         {/* VIEW 6: DOCUMENTATION & SCHEMA GUIDE */}
         {activeTab === 'docs' && <DocumentationView />}
+          </>
+        )}
       </main>
     </div>
   );
 }
+
