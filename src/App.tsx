@@ -47,6 +47,7 @@ import {
   VocabularyAnnotation,
 } from './types/reading';
 import { INITIAL_LESSONS } from './data/initialLessons';
+import { addLessonVocabulary } from './data/vocabularyExpansion';
 import {
   CEFR_TARGET_WORD_RANGES,
   upgradeLessonToIeltsAcademic,
@@ -296,7 +297,7 @@ export default function App() {
         }
       }
     });
-    return Array.from(map.values());
+    return Array.from(map.values()).map(addLessonVocabulary);
   }, [customLessonsMap, deletedLessonIds]);
 
   const publishedLessons = useMemo(

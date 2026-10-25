@@ -5,12 +5,13 @@ import { BATCH_B1_LESSONS } from './batches/batchB1';
 import { BATCH_B2_LESSONS } from './batches/batchB2';
 import { BATCH_C1_LESSONS } from './batches/batchC1';
 import { upgradeLessonToIeltsAcademic } from './ieltsAcademicUpgrade';
+import { addLessonVocabulary } from './vocabularyExpansion';
 
-const UPGRADED_A1 = BATCH_A1_LESSONS.map(upgradeLessonToIeltsAcademic);
-const UPGRADED_A2 = BATCH_A2_LESSONS.map(upgradeLessonToIeltsAcademic);
-const UPGRADED_B1 = BATCH_B1_LESSONS.map(upgradeLessonToIeltsAcademic);
-const UPGRADED_B2 = BATCH_B2_LESSONS.map(upgradeLessonToIeltsAcademic);
-const UPGRADED_C1 = BATCH_C1_LESSONS.map(upgradeLessonToIeltsAcademic);
+const UPGRADED_A1 = BATCH_A1_LESSONS.map((lesson) => addLessonVocabulary(upgradeLessonToIeltsAcademic(lesson)));
+const UPGRADED_A2 = BATCH_A2_LESSONS.map((lesson) => addLessonVocabulary(upgradeLessonToIeltsAcademic(lesson)));
+const UPGRADED_B1 = BATCH_B1_LESSONS.map((lesson) => addLessonVocabulary(upgradeLessonToIeltsAcademic(lesson)));
+const UPGRADED_B2 = BATCH_B2_LESSONS.map((lesson) => addLessonVocabulary(upgradeLessonToIeltsAcademic(lesson)));
+const UPGRADED_C1 = BATCH_C1_LESSONS.map((lesson) => addLessonVocabulary(upgradeLessonToIeltsAcademic(lesson)));
 
 export const LESSON_BATCHES: Record<CEFRLevel, ReadingLesson[]> = {
   A1: UPGRADED_A1,
