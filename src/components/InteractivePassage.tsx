@@ -498,7 +498,7 @@ export const InteractivePassage: React.FC<InteractivePassageProps> = ({
                   </p>
                 </div>
 
-                <div className="rounded-lg border border-[#FDE68A] bg-[#FEF3C7]/45 p-2.5">
+                <div data-vocab-definition="context" className="rounded-lg border border-[#FDE68A] bg-[#FEF3C7]/45 p-2.5">
                   <div className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-[#9A3412]">
                     <Sparkles className="h-3 w-3 text-[#9A3412]" />
                     <span>Meaning in This Passage</span>
@@ -556,6 +556,7 @@ export const InteractivePassage: React.FC<InteractivePassageProps> = ({
           return (
             <p
               key={pIdx}
+              data-evidence-highlighted={hasEvidence ? 'true' : undefined}
               className={`transition-colors duration-200 ${
                 hasEvidence
                   ? 'rounded-lg bg-[#DCFCE7]/50 px-3 py-2 border-l-4 border-[#15803D]'
@@ -579,6 +580,7 @@ export const InteractivePassage: React.FC<InteractivePassageProps> = ({
                     key={`${vocabItem.id}-${sIdx}`}
                     type="button"
                     data-vocab-trigger="true"
+                    data-vocab-state={isSelected ? 'selected' : isSaved ? 'saved' : 'default'}
                     aria-expanded={isSelected}
                     aria-haspopup="dialog"
                     onPointerEnter={(e) => handlePointerEnterWord(e, vocabItem)}
@@ -622,6 +624,7 @@ export const InteractivePassage: React.FC<InteractivePassageProps> = ({
                 key={v.id}
                 type="button"
                 data-vocab-trigger="true"
+                data-vocab-state={isSelected ? 'selected' : isSaved ? 'saved' : 'default'}
                 aria-expanded={isSelected}
                 aria-haspopup="dialog"
                 onPointerEnter={(e) => handlePointerEnterWord(e, v)}
@@ -648,3 +651,4 @@ export const InteractivePassage: React.FC<InteractivePassageProps> = ({
     </div>
   );
 };
+
