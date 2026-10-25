@@ -105,7 +105,10 @@ export interface LessonAttempt {
   lessonTitle: string;
   level: CEFRLevel;
   topic: AcademicTopic;
-  status: 'in_progress' | 'completed';
+  status: 'in_progress' | 'completed' | 'pending_review';
+  attemptType?: 'first' | 'practice' | 'review';
+  reviewOfAttemptId?: string;
+  progressionAppliedAt?: string;
   score: number;
   totalQuestions: number;
   accuracy: number;
@@ -138,6 +141,11 @@ export interface UserReadingProfile {
   uid: string;
   displayName: string;
   preferredLevel: CEFRLevel;
+  startingLevel?: CEFRLevel;
+  currentLevel?: CEFRLevel;
+  currentDifficultyScore?: number;
+  consecutivePasses?: number;
+  consecutiveFailures?: number;
   showArabicTranslation: boolean;
   fontSize: 'sm' | 'md' | 'lg' | 'xl';
   completedCount: number;
@@ -158,3 +166,4 @@ export interface AdaptiveRecommendation {
   weakestTopics: { topic: AcademicTopic; accuracy: number }[];
   suggestedLessons: ReadingLesson[];
 }
+
