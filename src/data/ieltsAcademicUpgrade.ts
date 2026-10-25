@@ -1,5 +1,13 @@
 import { CEFRLevel, ComprehensionQuestion, ReadingLesson } from '../types/reading';
 
+export const CEFR_VOCAB_TARGET_RANGES: Record<CEFRLevel, { min: number; max: number }> = {
+  A1: { min: 8, max: 12 },
+  A2: { min: 12, max: 16 },
+  B1: { min: 16, max: 22 },
+  B2: { min: 20, max: 28 },
+  C1: { min: 25, max: 35 },
+};
+
 export const CEFR_TARGET_WORD_RANGES: Record<CEFRLevel, { min: number; max: number }> = {
   A1: { min: 150, max: 250 },
   A2: { min: 250, max: 400 },

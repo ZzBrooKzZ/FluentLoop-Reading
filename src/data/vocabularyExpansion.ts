@@ -688,12 +688,16 @@ export function auditVocabularyAdditions(lesson: ReadingLesson): { unmatched: st
 export function addLessonVocabulary(lesson: ReadingLesson): ReadingLesson {
   let changed = false;
   const normalizedVocabulary = lesson.vocabulary.map((item) => {
+    if (item.originalSentence && lesson.passage.includes(item.originalSentence)) {
+      return item;
+    }
     const originalSentence = findSentence(lesson.passage, item.matchedText?.trim() || item.word.trim());
     if (!originalSentence || originalSentence === item.originalSentence) return item;
     changed = true;
     return { ...item, originalSentence };
   });
   const additions = VOCABULARY_ADDITIONS[lesson.id] || [];
+  const existingIds = new Set(normalizedVocabulary.map((item) => item.id));
   const existingWords = new Set(
     normalizedVocabulary.flatMap((item) => [item.word, item.matchedText || ''].map((value) => value.trim().toLowerCase()))
   );
@@ -701,12 +705,13 @@ export function addLessonVocabulary(lesson: ReadingLesson): ReadingLesson {
 
   for (const item of additions) {
     const key = item.word.trim().toLowerCase();
-    if (!key || existingWords.has(key)) continue;
+    const candidateId = `${lesson.id}-vocab-more-${stableSlug(item.word)}`;
+    if (!key || existingWords.has(key) || existingIds.has(candidateId)) continue;
     const originalSentence = findSentence(lesson.passage, item.word);
     if (!originalSentence) continue;
 
     added.push({
-      id: `${lesson.id}-vocab-more-${stableSlug(item.word)}`,
+      id: candidateId,
       word: item.word,
       occurrenceIndex: 0,
       partOfSpeech: item.partOfSpeech,
@@ -716,6 +721,7 @@ export function addLessonVocabulary(lesson: ReadingLesson): ReadingLesson {
       exampleSentence: item.exampleSentence || originalSentence,
     });
     existingWords.add(key);
+    existingIds.add(candidateId);
   }
 
   const vocabularyWithReviewedAdditions = [...normalizedVocabulary, ...added];
@@ -732,6 +738,12 @@ export function addLessonVocabulary(lesson: ReadingLesson): ReadingLesson {
     for (const term of PARAGRAPH_VOCABULARY) {
       if (addedForParagraph >= 2) break;
       const key = term.word.toLowerCase();
+      const candidateId = `${lesson.id}-vocab-paragraph-${paragraphIndex + 1}-${stableSlug(term.word)}`;
+      if (existingIds.has(candidateId)) {
+        coveredTermsByParagraph[paragraphIndex].add(key);
+        addedForParagraph += 1;
+        continue;
+      }
       const sentence = findSentence(paragraph, term.word);
       if (!sentence || coveredTermsByParagraph[paragraphIndex].has(key)) continue;
       const passageOffset = lesson.passage.indexOf(paragraph);
@@ -739,7 +751,7 @@ export function addLessonVocabulary(lesson: ReadingLesson): ReadingLesson {
       const wordPattern = new RegExp(`\\b${escapeRegExp(term.word)}\\b`, 'gi');
       const occurrenceIndex = (beforeParagraph.match(wordPattern) || []).length;
       paragraphAdditions.push({
-        id: `${lesson.id}-vocab-paragraph-${paragraphIndex + 1}-${stableSlug(term.word)}`,
+        id: candidateId,
         word: term.word,
         occurrenceIndex,
         partOfSpeech: term.partOfSpeech,
@@ -749,6 +761,7 @@ export function addLessonVocabulary(lesson: ReadingLesson): ReadingLesson {
         exampleSentence: sentence,
       });
       coveredTermsByParagraph[paragraphIndex].add(key);
+      existingIds.add(candidateId);
       addedForParagraph += 1;
     }
   });

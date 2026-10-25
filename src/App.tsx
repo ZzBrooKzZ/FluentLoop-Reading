@@ -287,9 +287,14 @@ export default function App() {
       if (!deletedLessonIds.has(lesson.id)) {
         const wc = lesson.passage ? lesson.passage.split(/\s+/).filter(Boolean).length : 0;
         const targetRange = CEFR_TARGET_WORD_RANGES[lesson.level];
-        if (initialById.has(lesson.id) && targetRange && wc < targetRange.min) {
-          // Preserve built-in IELTS Academic upgrade if cached snapshot had legacy short passage
-          map.set(lesson.id, initialById.get(lesson.id)!);
+        const builtIn = initialById.get(lesson.id);
+        if (
+          builtIn &&
+          ((targetRange && wc < targetRange.min) ||
+            (lesson.vocabulary?.length || 0) < builtIn.vocabulary.length)
+        ) {
+          // Preserve built-in IELTS Academic & expanded vocabulary upgrade if cached snapshot had legacy passage or fewer annotations
+          map.set(lesson.id, builtIn);
         } else if (targetRange && wc < targetRange.min) {
           map.set(lesson.id, upgradeLessonToIeltsAcademic(lesson));
         } else {

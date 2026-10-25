@@ -1,6 +1,6 @@
 import { AcademicTopic, CEFRLevel, ReadingLesson } from '../types/reading';
 import { getEditorialIllustrationUri } from '../utils/illustrations';
-import { CEFR_TARGET_WORD_RANGES } from '../data/ieltsAcademicUpgrade';
+import { CEFR_TARGET_WORD_RANGES, CEFR_VOCAB_TARGET_RANGES } from '../data/ieltsAcademicUpgrade';
 
 export const ALL_CEFR_LEVELS: CEFRLevel[] = ['A1', 'A2', 'B1', 'B2', 'C1'];
 
@@ -90,10 +90,16 @@ export function validateLesson(lesson: Partial<ReadingLesson>): LessonValidation
   const passageLower = (lesson.passage || '').toLowerCase();
 
   if (noVocabulary) {
-    errors.push('No vocabulary annotations found. Add at least 1–15 contextual vocabulary explanations before publishing.');
+    errors.push('No vocabulary annotations found. Add contextual vocabulary explanations before publishing.');
   } else {
-    if (vocab.length < 8) {
-      warnings.push(`Passage currently has ${vocab.length} vocabulary annotations (8–15 recommended).`);
+    const targetVocabRange =
+      lesson.level && ALL_CEFR_LEVELS.includes(lesson.level)
+        ? CEFR_VOCAB_TARGET_RANGES[lesson.level]
+        : { min: 8, max: 35 };
+    if (vocab.length < targetVocabRange.min) {
+      warnings.push(
+        `Passage currently has ${vocab.length} vocabulary annotations (${targetVocabRange.min}–${targetVocabRange.max} recommended for ${lesson.level || 'this'} level).`
+      );
     }
     for (const item of vocab) {
       const target = (item.matchedText || item.word || '').trim().toLowerCase();
