@@ -3,10 +3,18 @@ import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import dotenv from 'dotenv';
 import { GoogleGenAI, Type } from '@google/genai';
+import { cert, getApps as getAdminApps, initializeApp as initializeAdminApp } from 'firebase-admin/app';
+import { getAuth as getAdminAuth } from 'firebase-admin/auth';
+import { FieldValue, getFirestore as getAdminFirestore } from 'firebase-admin/firestore';
+import firebaseConfig from './firebase-applet-config.json';
+import { INITIAL_LESSONS } from './src/data/initialLessons';
+import { applyAttemptProgression, createAdaptiveProfile, DIFFICULTY_RANGES, estimateLessonDifficulty, getLessonDifficulty, selectNextLesson } from './src/services/adaptiveLearning';
+import { computeEvaluationCacheKey, evaluateQuestionLocally, extractRelevantPassageExcerpt, gradeLessonAttempt, normalizeAnswer } from './src/services/gradingService';
+import { ComprehensionQuestion, ReadingLesson } from './src/types/reading';
 
 dotenv.config();
 
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 const BOOTSTRAPPED_ADMIN_EMAIL = 'megritarek19@gmail.com';
 const DEFAULT_GRADING_MODEL = process.env.GEMINI_GRADING_MODEL || 'gemini-3.8-flash';
 
@@ -459,3 +467,4 @@ async function startServer() {
 }
 
 startServer();
+
